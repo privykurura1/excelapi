@@ -3,6 +3,7 @@ from flask_cors import CORS
 import pdfplumber
 import pandas as pd
 import os
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -10,18 +11,26 @@ CORS(app)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def extract_dynamic_table(pdf):
-    extracted_data = []
+def extract_transaction_data(pdf):
+    transactions = []
+    pattern = re.compile(r'^(\d{2}/\d{2}/\d{2})\s+(.*?)\s+([A-Za-z0-9_ ]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.-]+)$')
     
     for page in pdf.pages:
-        table = page.extract_table()
-        if table:
-            headers = table[0]  # First row as headers
-            for row in table[1:]:  # Skip header row
-                if len(row) == len(headers):  # Ensure row consistency
-                    extracted_data.append(dict(zip(headers, row)))
+        lines = page.extract_text().split("\n") if page.extract_text() else []
+        
+        for line in lines:
+            match = pattern.match(line)
+            if match:
+                transactions.append({
+                    "Date": match.group(1),
+                    "Reference": match.group(2),
+                    "Description": match.group(3),
+                    "Debit": match.group(4),
+                    "Credit": match.group(5),
+                    "Balance": match.group(6)
+                })
     
-    return pd.DataFrame(extracted_data) if extracted_data else pd.DataFrame()
+    return pd.DataFrame(transactions) if transactions else pd.DataFrame()
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -37,14 +46,13 @@ def upload_file():
     
     try:
         with pdfplumber.open(file_path) as pdf:
-            extracted_df = extract_dynamic_table(pdf)
+            transactions_df = extract_transaction_data(pdf)
             
-            if extracted_df.empty:
-                return jsonify({"error": "No tabular data found in the PDF"}), 400
+            if transactions_df.empty:
+                return jsonify({"error": "No structured data found in the PDF"}), 400
             
-            # Save extracted data to Excel
             excel_path = os.path.join(UPLOAD_FOLDER, "converted.xlsx")
-            extracted_df.to_excel(excel_path, sheet_name="Extracted Data", index=False)
+            transactions_df.to_excel(excel_path, sheet_name="Transactions", index=False)
             
             return send_file(excel_path, as_attachment=True)
     except Exception as e:
